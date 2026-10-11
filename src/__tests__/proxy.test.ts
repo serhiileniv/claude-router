@@ -156,6 +156,65 @@ describe('createProxyApp', () => {
     // in the operator's browser read responses from this local proxy.
     const res = await app.request('/health', { headers: { origin: 'https://evil.example' } });
     assert.equal(res.headers.get('access-control-allow-origin'), null);
+    assert.equal(res.status, 403);
+  });
+
+  describe('browser-origin guard', () => {
+    it('refuses a rebound Host name on every route', async () => {
+      for (const path of ['/health', '/dashboard', '/api/last-route']) {
+        const res = await app.request(`http://attacker.example${path}`, { headers: { host: 'attacker.example:4000' } });
+        assert.equal(res.status, 403, path);
+      }
+    });
+
+    it('accepts loopback Host names, with and without a port', async () => {
+      for (const host of ['localhost', 'localhost:4000', '127.0.0.1:4000', '[::1]:4000']) {
+        const res = await app.request('/health', { headers: { host } });
+        assert.equal(res.status, 200, host);
+      }
+    });
+
+    it('refuses a cross-origin or sandboxed text/plain POST before it reaches the handler', async () => {
+      for (const origin of ['https://evil.example', 'null', 'http://localhost:3000']) {
+        const res = await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { host: 'localhost:4000', origin, 'content-type': 'text/plain' },
+          body: '{}',
+        });
+        assert.equal(res.status, 403, origin);
+      }
+    });
+
+    it('refuses Sec-Fetch-Site cross-site and same-site, accepts same-origin and none', async () => {
+      const get = (site: string) => app.request('/health', { headers: { 'sec-fetch-site': site } });
+      assert.equal((await get('cross-site')).status, 403);
+      assert.equal((await get('same-site')).status, 403);
+      assert.equal((await get('same-origin')).status, 200);
+      assert.equal((await get('none')).status, 200);
+    });
+
+    it('accepts the dashboard fetching itself (Origin equals Host)', async () => {
+      const res = await app.request('/health', { headers: { host: 'localhost:4000', origin: 'http://localhost:4000' } });
+      assert.equal(res.status, 200);
+    });
+
+    it('requires application/json on POST /v1/messages and /api/agents', async () => {
+      for (const path of ['/v1/messages', '/api/agents']) {
+        const res = await app.request(path, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' });
+        assert.equal(res.status, 415, path);
+      }
+    });
+
+    it('lets a network-exposed bind skip only the Host check', async () => {
+      const exposed = createProxyApp(
+        { classifier: 'heuristic', defaultModel: 'claude-sonnet-4-6', verbose: false, provider: 'anthropic', models: DEFAULT_MODELS, forceRoute: false },
+        null,
+        { allowAnyHost: true },
+      );
+      assert.equal((await exposed.request('http://lan.example/health', { headers: { host: 'lan.example:4000' } })).status, 200);
+      const cross = await exposed.request('/health', { headers: { host: 'lan.example:4000', origin: 'https://evil.example' } });
+      assert.equal(cross.status, 403);
+    });
   });
 
   it('GET /dashboard returns HTML', async () => {

@@ -235,7 +235,7 @@ describe('POST /api/agents', () => {
   it('rejects a body without both strings, and a non-POST method', async () => {
     const bad = await app.request('/api/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentId: 'x' }) });
     assert.equal(bad.status, 400);
-    const notJson = await app.request('/api/agents', { method: 'POST', body: '{' });
+    const notJson = await app.request('/api/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' });
     assert.equal(notJson.status, 400);
     const get = await app.request('/api/agents');
     assert.equal(get.status, 405, 'the router surface is reserved on every method');

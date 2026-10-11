@@ -248,7 +248,7 @@ async function cmdStart(args: string[], paths: RouterPaths): Promise<CommandResu
     routing: options.routing,
     historyFile: paths.historyFile,
     upstream: options.upstream,
-  }, providerClient);
+  }, providerClient, { allowAnyHost: isNetworkExposed(options.host) });
 
   const { loaded } = loadFileConfig(paths.configFile);
 
