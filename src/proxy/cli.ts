@@ -29,7 +29,7 @@ import {
   applyRegionEnv,
   configFromOptions,
   getVersion,
-  loadFileConfig,
+  loadFileConfig, OPTIONS,
   parseServeArgs,
   routerPaths,
   serveArgsFrom,
@@ -326,8 +326,22 @@ async function cmdStop(_args: string[], paths: RouterPaths): Promise<CommandResu
  * previous daemon recorded, else defaults. Pure, because "does a restart carry
  * `--force-route` over" is the whole point of the command.
  */
-export function restartArgs(args: string[], previous: string[] | undefined): string[] {
-  return args.length > 0 ? args : previous ?? [];
+export function restartArgs(args: string[], previous: string[] | undefined, config?: FileConfig): string[] {
+  if (args.length > 0) return args;
+  if (!previous) return [];
+  if (!config) return previous;
+  // config.json is the source of truth: an inherited flag whose key it no longer
+  // holds was removed on purpose, and CLI flags beat the file, so keeping it
+  // would resurrect it.
+  const kept: string[] = [];
+  for (let i = 0; i < previous.length; i++) {
+    const spec = OPTIONS.find((o) => o.flags.includes(previous[i]));
+    const width = spec && spec.kind.type !== 'boolean' ? 2 : 1;
+    const held = spec && (config as Record<string, unknown>)[spec.key];
+    if (!spec || (held !== undefined && held !== null && held !== '')) kept.push(...previous.slice(i, i + width));
+    i += width - 1;
+  }
+  return kept;
 }
 
 async function cmdRestart(args: string[], paths: RouterPaths): Promise<CommandResult> {
@@ -344,7 +358,7 @@ async function cmdRestart(args: string[], paths: RouterPaths): Promise<CommandRe
     );
   }
 
-  const { options, warnings } = resolveOptions(restartArgs(args, state?.args), paths);
+  const { options, warnings } = resolveOptions(restartArgs(args, state?.args, (() => { const l = loadFileConfig(paths.configFile); return l.loaded ? l.config : undefined; })()), paths);
   lines.push(...warnings);
 
   const result = await startDaemon(serveArgsFrom(options), options.port, paths);
