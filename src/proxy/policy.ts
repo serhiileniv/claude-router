@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,15 +27,25 @@ export interface ExecResult {
 /** Runs `claude <args>`; injectable so the install flow is testable without the CLI. */
 export type Exec = (args: string[]) => ExecResult;
 
+/**
+ * One cmd.exe command line for a `.cmd` shim. Node refuses to spawn `.cmd`
+ * without a shell, but `shell: true` plus an args array concatenates the args
+ * unescaped (DEP0190). So the shell gets a single string whose args are
+ * double-quoted here; cmd metacharacters and quotes inside an arg are rejected.
+ */
+export function winCmdLine(bin: string, args: string[]): string {
+  const q = (a: string) => {
+    if (/["%^&|<>\r\n]/.test(a)) throw new Error(`unsafe argument for cmd.exe: ${a}`);
+    return /^[\w./:@=+-]+$/.test(a) ? a : `"${a}"`;
+  };
+  return [bin, ...args.map(q)].join(' ');
+}
+
 export function defaultExec(args: string[]): ExecResult {
   const win = process.platform === 'win32';
   try {
-    const output = execFileSync(win ? 'claude.cmd' : 'claude', args, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 60_000,
-      shell: win,
-    });
+    const opts = { encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'], timeout: 60_000 };
+    const output = win ? execSync(winCmdLine('claude.cmd', args), opts) : execFileSync('claude', args, opts);
     return { ok: true, output: output.trim() };
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };

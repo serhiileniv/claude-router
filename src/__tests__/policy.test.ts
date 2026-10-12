@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { installPolicyPlugin, uninstallPolicyPlugin, policyPluginStatus, PLUGIN_ID, MARKETPLACE_SOURCE, type Exec } from '../proxy/policy.js';
+import { winCmdLine, installPolicyPlugin, uninstallPolicyPlugin, policyPluginStatus, PLUGIN_ID, MARKETPLACE_SOURCE, type Exec } from '../proxy/policy.js';
 
 /** A scripted `claude` CLI: answers each call from the queue, records what was asked. */
 function scripted(answers: Array<{ ok: boolean; output?: string }>): { exec: Exec; calls: string[][] } {
@@ -73,5 +73,13 @@ describe('policyPluginStatus', () => {
     assert.equal(policyPluginStatus(dir).installed, false);
     fs.writeFileSync(path.join(dir, 'installed_plugins.json'), '{');
     assert.equal(policyPluginStatus(dir).installed, false);
+  });
+});
+
+describe('winCmdLine', () => {
+  it('quotes spaces and rejects cmd metacharacters', () => {
+    assert.equal(winCmdLine('claude.cmd', ['plugin', 'install', '--scope', 'user', 'a@b']), 'claude.cmd plugin install --scope user a@b');
+    assert.equal(winCmdLine('claude.cmd', ['C:\\My Dir']), 'claude.cmd "C:\\My Dir"');
+    assert.throws(() => winCmdLine('claude.cmd', ['x & calc']));
   });
 });
