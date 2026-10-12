@@ -30,15 +30,18 @@ export type Exec = (args: string[]) => ExecResult;
 /**
  * One cmd.exe command line for a `.cmd` shim. Node refuses to spawn `.cmd`
  * without a shell, but `shell: true` plus an args array concatenates the args
- * unescaped (DEP0190). So the shell gets a single string whose args are
- * double-quoted here; cmd metacharacters and quotes inside an arg are rejected.
+ * unescaped (DEP0190). So the shell gets a single string whose words are
+ * double-quoted here. Rejected: `"%^&|<>!` and line breaks (`!` expands inside
+ * quotes under delayed expansion). Backslashes before the closing quote are
+ * doubled so the target's argv parser does not read `\"` as a literal quote.
+ * Keep in sync with the copy in plugin/hooks/sessionstart.js.
  */
 export function winCmdLine(bin: string, args: string[]): string {
   const q = (a: string) => {
-    if (/["%^&|<>\r\n]/.test(a)) throw new Error(`unsafe argument for cmd.exe: ${a}`);
-    return /^[\w./:@=+-]+$/.test(a) ? a : `"${a}"`;
+    if (/["%^&|<>!\r\n]/.test(a)) throw new Error(`unsafe argument for cmd.exe: ${a}`);
+    return /^[\w./:@=+-]+$/.test(a) ? a : `"${a.replace(/\\+$/, (m) => m + m)}"`;
   };
-  return [bin, ...args.map(q)].join(' ');
+  return [bin, ...args].map(q).join(' ');
 }
 
 export function defaultExec(args: string[]): ExecResult {

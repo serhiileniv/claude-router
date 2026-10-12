@@ -82,4 +82,14 @@ describe('winCmdLine', () => {
     assert.equal(winCmdLine('claude.cmd', ['C:\\My Dir']), 'claude.cmd "C:\\My Dir"');
     assert.throws(() => winCmdLine('claude.cmd', ['x & calc']));
   });
+  it('doubles trailing backslashes so the closing quote survives', () => {
+    assert.equal(winCmdLine('x.cmd', ['C:\\My Dir\\']), 'x.cmd "C:\\My Dir\\\\"');
+    assert.equal(winCmdLine('x.cmd', ['a b\\\\']), 'x.cmd "a b\\\\\\\\"');
+  });
+  it('rejects ! (delayed expansion)', () => {
+    assert.throws(() => winCmdLine('x.cmd', ['!COMPUTERNAME!']));
+  });
+  it('quotes a bin path with spaces', () => {
+    assert.equal(winCmdLine('C:\\My Dir\\cr.cmd', ['start', '-d']), '"C:\\My Dir\\cr.cmd" start -d');
+  });
 });

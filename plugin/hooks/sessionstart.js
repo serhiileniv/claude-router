@@ -22,15 +22,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * launches allocates a visible one (a "node.exe" window). Attached, both share
  * the hidden console windowsHide creates; `start -d` detaches the daemon itself.
  */
+// Copy of winCmdLine in src/proxy/policy.ts (the plugin ships standalone); keep in sync.
+function winCmdLine(bin, args) {
+  const q = (a) => {
+    if (/["%^&|<>!\r\n]/.test(a)) throw new Error(`unsafe argument for cmd.exe: ${a}`);
+    return /^[\w./:@=+-]+$/.test(a) ? a : `"${a.replace(/\\+$/, (m) => m + m)}"`;
+  };
+  return [bin, ...args].map(q).join(' ');
+}
+
 async function ensureProxy(port) {
   let health = await request(port, 'GET', '/health');
   if (health || process.env.CLAUDE_ROUTER_NO_AUTOSTART) return { health, started: false };
   try {
     const win = process.platform === 'win32';
     const bin = process.env.CLAUDE_ROUTER_BIN || (win ? 'claude-router.cmd' : 'claude-router');
-    // Windows: one command string, not shell:true + args array (DEP0190). Args are constant.
+    // Windows: one command string, not shell:true + args array (DEP0190); bin is quoted (may hold spaces).
     const child = win
-      ? spawn(`${bin} start -d`, { stdio: 'ignore', shell: true, windowsHide: true })
+      ? spawn(winCmdLine(bin, ['start', '-d']), { stdio: 'ignore', shell: true, windowsHide: true })
       : spawn(bin, ['start', '-d'], { detached: true, stdio: 'ignore', windowsHide: true });
     child.on('error', () => {});
     child.unref();
