@@ -3,7 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { handleMessages, handlePassthrough, registerAgent, routeHistory, routeCounters, type HandlerConfig } from './handler.js';
 import { getVersion } from './cli-config.js';
 import { renderDashboard } from './dashboard.js';
-import { readLifetimeStats } from './history.js';
+import { readLifetimeStatsAsync } from './history.js';
 import { buildHealth, formatStatusLine } from './health.js';
 import { localGuard, requireJson } from './local-guard.js';
 
@@ -56,8 +56,9 @@ export function createProxyApp(
     return c.body(null, 204);
   });
 
-  app.get('/dashboard', (c) => {
-    const lifetime = config.historyFile ? readLifetimeStats(config.historyFile) : undefined;
+  app.get('/dashboard', async (c) => {
+    // Async + chunked: the first read folds the whole ledger and must not block /v1/messages.
+    const lifetime = config.historyFile ? await readLifetimeStatsAsync(config.historyFile) : undefined;
     return c.html(renderDashboard(routeHistory, lifetime));
   });
 

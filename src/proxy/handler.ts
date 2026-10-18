@@ -27,6 +27,8 @@ export interface HandlerConfig {
   provider: Provider;
   models: Record<Tier, string>;
   forceRoute: boolean;
+  /** Request body cap in bytes; default MAX_REQUEST_BODY_BYTES (32 MiB). Over it: 413. */
+  maxRequestBodyBytes?: number;
   /**
    * Pin the Claude Code coordinator session to this tier, bypassing the
    * classifier for it. The main interactive session sends NO x-claude-code-agent-id
@@ -393,7 +395,9 @@ export async function handleMessages(
   }
 
   // Read once as text so passthrough can forward the exact client bytes
-  const rawBody = await c.req.text();
+  const maxBody = config.maxRequestBodyBytes ?? MAX_REQUEST_BODY_BYTES;
+  const rawBody = await readBodyCapped(c, maxBody);
+  if (rawBody === null) return tooLarge(c, maxBody);
   let body: Record<string, unknown>;
   try {
     body = JSON.parse(rawBody) as Record<string, unknown>;
@@ -720,25 +724,93 @@ function passthroughCost(model: string, usage: Anthropic.Usage | undefined, conf
 
 /** Pull the usage (and model) out of a buffered SSE stream: message_start carries input, message_delta output. */
 export function usageFromSse(text: string): { model?: string; usage: Anthropic.Usage } | null {
-  let model: string | undefined;
-  let usage: Partial<Anthropic.Usage> | undefined;
-  for (const line of text.split('\n')) {
-    if (!line.startsWith('data:')) continue;
+  const p = new SseUsageParser();
+  p.push(text);
+  return p.result();
+}
+
+/** A usage-bearing SSE line is a few hundred bytes; anything past this is content we do not need. */
+const MAX_SSE_LINE = 1024 * 1024;
+
+/**
+ * Incremental form of usageFromSse: folds each complete line as chunks arrive
+ * and keeps only the model, the usage and the current partial line, so a long
+ * stream costs O(longest line) memory instead of O(stream).
+ */
+export class SseUsageParser {
+  private model: string | undefined;
+  private usage: Partial<Anthropic.Usage> | undefined;
+  private pending = '';
+  private skipping = false;
+
+  get bufferedChars(): number { return this.pending.length; }
+
+  push(text: string): void {
+    const parts = (this.pending + text).split('\n');
+    this.pending = parts.pop() ?? '';
+    for (const line of parts) {
+      if (this.skipping) { this.skipping = false; continue; } // tail of an oversize line
+      this.fold(line);
+    }
+    if (this.skipping) this.pending = '';
+    else if (this.pending.length > MAX_SSE_LINE) { this.pending = ''; this.skipping = true; }
+  }
+
+  result(): { model?: string; usage: Anthropic.Usage } | null {
+    if (this.pending && !this.skipping) { this.fold(this.pending); this.pending = ''; }
+    if (!this.usage || typeof this.usage.input_tokens !== 'number') return null;
+    return { ...(this.model ? { model: this.model } : {}), usage: this.usage as Anthropic.Usage };
+  }
+
+  private fold(line: string): void {
+    if (!line.startsWith('data:')) return;
     let event: { type?: string; message?: { model?: string; usage?: Partial<Anthropic.Usage> }; usage?: Partial<Anthropic.Usage> };
     try {
       event = JSON.parse(line.slice(5).trim()) as typeof event;
     } catch {
-      continue;
+      return;
     }
     if (event.type === 'message_start' && event.message) {
-      model = event.message.model;
-      usage = { ...event.message.usage };
-    } else if (event.type === 'message_delta' && event.usage && usage) {
-      usage = { ...usage, ...event.usage };
+      this.model = event.message.model;
+      this.usage = { ...event.message.usage };
+    } else if (event.type === 'message_delta' && event.usage && this.usage) {
+      this.usage = { ...this.usage, ...event.usage };
     }
   }
-  if (!usage || typeof usage.input_tokens !== 'number') return null;
-  return { ...(model ? { model } : {}), usage: usage as Anthropic.Usage };
+}
+
+/**
+ * Request body cap. 32 MiB is the Messages API's own request limit, so a larger
+ * body would be rejected upstream anyway; refusing it here keeps the string plus
+ * JSON.parse tree (~3x) from exhausting the heap. Override: HandlerConfig.maxRequestBodyBytes.
+ */
+export const MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024;
+
+/** Read the request body as text, or null once it exceeds `max` bytes (declared or streamed). */
+async function readBodyCapped(c: Context, max: number): Promise<string | null> {
+  const declared = Number(c.req.header('content-length'));
+  if (Number.isFinite(declared) && declared > max) return null;
+  const stream = c.req.raw.body;
+  if (!stream) return '';
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let out = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) { await reader.cancel().catch(() => {}); return null; }
+    out += decoder.decode(value, { stream: true });
+  }
+  return out + decoder.decode();
+}
+
+function tooLarge(c: Context, max: number): Response {
+  return c.json(
+    { error: { type: 'request_too_large', message: `Request body exceeds the ${max} byte limit` } },
+    413,
+  );
 }
 
 async function proxyPassthrough(
@@ -791,16 +863,16 @@ async function proxyPassthrough(
     }
     // Stream: pass every byte through as it arrives and keep a copy; parse the
     // copy for usage once the origin closes. No event is held back.
-    let seen = '';
+    const seen = new SseUsageParser();
     const decoder = new TextDecoder();
     const tap = new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
-        seen += decoder.decode(chunk, { stream: true });
+        seen.push(decoder.decode(chunk, { stream: true }));
         controller.enqueue(chunk);
       },
       flush() {
-        seen += decoder.decode();
-        const parsed = usageFromSse(seen);
+        seen.push(decoder.decode());
+        const parsed = seen.result();
         if (!parsed) return;
         const model = parsed.model ?? requestedModel;
         const cost = passthroughCost(model, parsed.usage, config);
@@ -835,7 +907,9 @@ export async function handlePassthrough(
   c.req.raw.headers.forEach((value, key) => headers.set(key, value));
 
   const method = c.req.method;
-  const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text();
+  const maxBody = config.maxRequestBodyBytes ?? MAX_REQUEST_BODY_BYTES;
+  const body = method === 'GET' || method === 'HEAD' ? undefined : await readBodyCapped(c, maxBody);
+  if (body === null) return tooLarge(c, maxBody);
 
   try {
     const { response, headers: outHeaders } = await forwardUpstream(
