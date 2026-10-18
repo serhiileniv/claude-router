@@ -254,6 +254,7 @@ async function cmdStart(args: string[], paths: RouterPaths): Promise<CommandResu
 
   // Process-global handlers stay here rather than in `startServer`: they outlive
   // any one bind, and a test that imports `startServer` must not inherit them.
+  installUncaughtGuard();
   process.on('unhandledRejection', (e) => {
     term.errorLine(`Fatal error: ${String(e)}`);
     if (options.provider === 'vertex') {
@@ -279,6 +280,30 @@ async function cmdStart(args: string[], paths: RouterPaths): Promise<CommandResu
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   return ok([...warnings, ...startBanner(options, models, loaded, paths)]);
+}
+
+/** Transport-level failures of a pooled upstream connection (undici, node:http2, node:net). */
+const UPSTREAM_TRANSPORT_ERROR = /^(UND_ERR_|ERR_HTTP2_|ECONNRESET$|EPIPE$|ETIMEDOUT$|ECONNREFUSED$|ENOTFOUND$|EAI_AGAIN$)/;
+
+/**
+ * An `error` event nobody listens for is an uncaught exception, not a rejection,
+ * so `unhandledRejection` never sees it. undici emits one on a pooled
+ * ClientHttp2Stream when the upstream closes the socket (`UND_ERR_SOCKET`); that
+ * fails one request and must not take the daemon down. Anything else stays fatal.
+ */
+export function installUncaughtGuard(
+  proc: Pick<NodeJS.Process, 'on'> = process,
+  onFatal: (code: number) => void = (code) => process.exit(code),
+): void {
+  proc.on('uncaughtException', (e: unknown) => {
+    const code = (e as NodeJS.ErrnoException | undefined)?.code;
+    if (typeof code === 'string' && UPSTREAM_TRANSPORT_ERROR.test(code)) {
+      console.error(`[claude-router] upstream connection error (${code}), request failed, daemon keeps serving: ${String(e)}`);
+      return;
+    }
+    console.error(`[claude-router] uncaught exception: ${(e as Error | undefined)?.stack ?? String(e)}`);
+    onFatal(1);
+  });
 }
 
 /**

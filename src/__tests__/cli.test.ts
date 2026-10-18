@@ -1,6 +1,7 @@
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -87,5 +88,37 @@ describe('startServer', () => {
     const port = (server.address() as AddressInfo).port;
     const res = await fetch(`http://127.0.0.1:${port}/health`);
     assert.equal(res.status, 200);
+  });
+});
+
+describe('installUncaughtGuard', () => {
+  // An 'error' event with no listener is an uncaught exception, not a rejection:
+  // this is how a pooled upstream ClientHttp2Stream killed the daemon (UND_ERR_SOCKET).
+  const run = (code: string, importGuard: boolean) =>
+    spawnSync(process.execPath, ['--input-type=module', '-e',
+      `${importGuard ? "import { installUncaughtGuard } from './dist/proxy/cli.js'; installUncaughtGuard();" : ''}
+       import { EventEmitter } from 'node:events';
+       ${code}
+       setTimeout(() => console.log('ALIVE'), 50);`], { encoding: 'utf8', cwd: process.cwd() });
+  const socketError = `const e = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
+    setTimeout(() => new EventEmitter().emit('error', e), 10);`;
+
+  it('control: without the guard an unhandled upstream error event kills the process', () => {
+    const r = run(socketError, false);
+    assert.notEqual(r.status, 0);
+    assert.doesNotMatch(r.stdout, /ALIVE/);
+  });
+
+  it('survives an upstream socket error and logs it', () => {
+    const r = run(socketError, true);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /ALIVE/);
+    assert.match(r.stderr, /UND_ERR_SOCKET/);
+  });
+
+  it('still dies on an unrelated uncaught exception', () => {
+    const r = run(`setTimeout(() => { throw new TypeError('bug'); }, 10);`, true);
+    assert.notEqual(r.status, 0);
+    assert.doesNotMatch(r.stdout, /ALIVE/);
   });
 });
