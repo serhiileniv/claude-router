@@ -44,11 +44,34 @@ export function winCmdLine(bin: string, args: string[]): string {
   return [bin, ...args].map(q).join(' ');
 }
 
+type ExecOpts = { encoding: 'utf8'; stdio: ['ignore', 'pipe', 'pipe']; timeout: number };
+interface WinRunners {
+  file: (bin: string, args: string[], opts: ExecOpts) => string;
+  shell: (cmd: string, opts: ExecOpts) => string;
+}
+
+/**
+ * Windows: a native install ships only `claude.exe` (no shell needed), an npm install only the `claude.cmd` shim
+ * (cmd.exe). Try the exe first and fall back to the shim only when the exe is not on PATH (ENOENT).
+ */
+export function runClaudeWin(
+  args: string[],
+  opts: Partial<ExecOpts> = {},
+  run: WinRunners = { file: (b, a, o) => execFileSync(b, a, o), shell: (c, o) => execSync(c, o) },
+): string {
+  const o = { encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'], timeout: 60_000, ...opts };
+  try {
+    return run.file('claude.exe', args, o);
+  } catch (err) {
+    if ((err as { code?: string }).code !== 'ENOENT') throw err;
+    return run.shell(winCmdLine('claude.cmd', args), o);
+  }
+}
+
 export function defaultExec(args: string[]): ExecResult {
-  const win = process.platform === 'win32';
   try {
     const opts = { encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'], timeout: 60_000 };
-    const output = win ? execSync(winCmdLine('claude.cmd', args), opts) : execFileSync('claude', args, opts);
+    const output = process.platform === 'win32' ? runClaudeWin(args, opts) : execFileSync('claude', args, opts);
     return { ok: true, output: output.trim() };
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };

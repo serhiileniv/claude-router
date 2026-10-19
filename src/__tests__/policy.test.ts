@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { winCmdLine, installPolicyPlugin, uninstallPolicyPlugin, policyPluginStatus, PLUGIN_ID, MARKETPLACE_SOURCE, type Exec } from '../proxy/policy.js';
+import { winCmdLine, runClaudeWin, installPolicyPlugin, uninstallPolicyPlugin, policyPluginStatus, PLUGIN_ID, MARKETPLACE_SOURCE, type Exec } from '../proxy/policy.js';
 
 /** A scripted `claude` CLI: answers each call from the queue, records what was asked. */
 function scripted(answers: Array<{ ok: boolean; output?: string }>): { exec: Exec; calls: string[][] } {
@@ -91,5 +91,36 @@ describe('winCmdLine', () => {
   });
   it('quotes a bin path with spaces', () => {
     assert.equal(winCmdLine('C:\\My Dir\\cr.cmd', ['start', '-d']), '"C:\\My Dir\\cr.cmd" start -d');
+  });
+});
+
+describe('runClaudeWin', () => {
+  const enoent = () => Object.assign(new Error('spawn claude.exe ENOENT'), { code: 'ENOENT' });
+
+  it('runs claude.exe directly, no shell', () => {
+    const seen: string[] = [];
+    const out = runClaudeWin(['--version'], {}, {
+      file: (bin, args) => { seen.push(`${bin} ${args.join(' ')}`); return '1.0\n'; },
+      shell: () => { throw new Error('shell must not run'); },
+    });
+    assert.equal(out, '1.0\n');
+    assert.deepEqual(seen, ['claude.exe --version']);
+  });
+
+  it('falls back to claude.cmd through cmd.exe when claude.exe is missing', () => {
+    let line = '';
+    const out = runClaudeWin(['plugin', 'list'], {}, {
+      file: () => { throw enoent(); },
+      shell: (cmd) => { line = cmd; return 'ok'; },
+    });
+    assert.equal(out, 'ok');
+    assert.equal(line, 'claude.cmd plugin list');
+  });
+
+  it('does not fall back when claude.exe ran and failed', () => {
+    assert.throws(() => runClaudeWin(['x'], {}, {
+      file: () => { throw Object.assign(new Error('exit 1'), { status: 1 }); },
+      shell: () => 'wrong',
+    }), /exit 1/);
   });
 });
