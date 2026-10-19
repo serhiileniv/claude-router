@@ -6,7 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { proxyPort, readStdinJson, request } = require('./common.js');
+const { findProxyPort, readStdinJson, request } = require('./common.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -56,7 +56,7 @@ async function ensureProxy(port) {
 async function main() {
   await readStdinJson(); // consumed, not needed — keeps the pipe drained
   const policy = fs.readFileSync(path.join(__dirname, '..', 'policy', 'policy.md'), 'utf8');
-  const port = proxyPort();
+  const port = await findProxyPort();
   const { health, started } = await ensureProxy(port);
 
   let status;

@@ -158,6 +158,34 @@ describe('plugin bundle — hooks', () => {
     assert.match(stdout, /claude-router: enforcing — session pinned to opus, subagent roles routed by the proxy/);
   });
 
+  it('sessionstart finds the router behind a front proxy that carries the upstream in the path', async () => {
+    const proxy = await liveProxy({
+      classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false,
+      provider: 'anthropic', models: DEFAULT_MODELS, forceRoute: true, sessionModel: 'opus',
+    });
+    after(() => proxy.close());
+    const { stdout, status } = await runHook('sessionstart.js', {
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:1/bili/http://127.0.0.1:${proxy.port}`,
+      CLAUDE_ROUTER_NO_AUTOSTART: '1',
+    });
+    assert.equal(status, 0);
+    assert.match(stdout, new RegExp(`claude-router: enforcing .*port ${proxy.port}`));
+  });
+
+  it('sessionstart finds the router in the middle of a chain of local relays by probing /health', async () => {
+    const proxy = await liveProxy({
+      classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false,
+      provider: 'anthropic', models: DEFAULT_MODELS, forceRoute: true, sessionModel: 'opus',
+    });
+    after(() => proxy.close());
+    const { stdout, status } = await runHook('sessionstart.js', {
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:1/a/http://127.0.0.1:${proxy.port}/b/http://127.0.0.1:2`,
+      CLAUDE_ROUTER_NO_AUTOSTART: '1',
+    });
+    assert.equal(status, 0);
+    assert.match(stdout, new RegExp(`claude-router: enforcing .*port ${proxy.port}`));
+  });
+
   it('sessionstart says so when the proxy is up but not routing', async () => {
     const proxy = await liveProxy({
       classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false,
