@@ -86,17 +86,21 @@ export function readLifetimeStats(file: string): LifetimeStats {
   try {
     const fd = fs.openSync(file, 'r');
     try {
-      const buf = Buffer.alloc(size - cached.offset);
-      fs.readSync(fd, buf, 0, buf.length, cached.offset);
-      const text = buf.toString('utf8');
+      const buf = Buffer.alloc(Math.min(ASYNC_CHUNK, size - cached.offset));
+      let carry = Buffer.alloc(0);
       // Only fold complete lines; keep the offset at the last newline so a
       // partially-written trailing line is picked up next read.
-      const lastNewline = text.lastIndexOf('\n');
-      if (lastNewline >= 0) {
-        for (const line of text.slice(0, lastNewline).split('\n')) {
+      while (cached.offset + carry.length < size) {
+        const bytesRead = fs.readSync(fd, buf, 0, buf.length, cached.offset + carry.length);
+        if (bytesRead === 0) break;
+        const data = Buffer.concat([carry, buf.subarray(0, bytesRead)]);
+        const lastNewline = data.lastIndexOf(0x0a);
+        if (lastNewline < 0) { carry = data; continue; }
+        for (const line of data.subarray(0, lastNewline).toString('utf8').split('\n')) {
           if (line.trim()) foldLine(cached.stats, line);
         }
         cached.offset += lastNewline + 1;
+        carry = data.subarray(lastNewline + 1);
       }
     } finally {
       fs.closeSync(fd);
