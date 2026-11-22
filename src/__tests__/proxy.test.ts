@@ -1071,3 +1071,47 @@ describe('getAnthropicClient — upstream override', () => {
     assert.notEqual(stub, real);
   });
 });
+
+describe('streaming client cancel', () => {
+  // A client that disconnects mid-stream cancels the ReadableStream. The handler
+  // must abort the upstream stream (else the upstream call keeps running and
+  // billing), must not throw on the closed controller, and must still land an
+  // error event in history.
+  it('cancel aborts the upstream stream and records an error event', async () => {
+    let aborted = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const startEvent = { type: 'message_start', message: { id: 'm', usage: { input_tokens: 1, output_tokens: 0 } } };
+    const stub = {
+      [Symbol.asyncIterator]() {
+        let i = 0;
+        return {
+          async next() {
+            if (i++ === 0) return { done: false, value: startEvent };
+            await gate; // hangs until the stub is aborted
+            throw new Error('aborted');
+          },
+        };
+      },
+      abort() { aborted++; release(); },
+      finalMessage: () => new Promise(() => {}),
+    };
+    const client = { messages: { stream: () => stub } } as unknown as Anthropic;
+    const app = createProxyApp({
+      classifier: 'heuristic', defaultModel: 'claude-sonnet-5', verbose: false,
+      provider: 'bedrock', models: DEFAULT_MODELS, forceRoute: true,
+    }, client);
+    const before = routeHistory.length;
+    const res = await app.request('/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-5', stream: true, messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    for (let i = 0; i < 50 && routeHistory.length === before; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(aborted, 1, 'upstream stream aborted on cancel');
+    assert.equal(routeHistory.length, before + 1, 'the cancelled stream lands in history');
+    assert.ok(routeHistory[routeHistory.length - 1]!.error, 'recorded as an error event');
+  });
+});

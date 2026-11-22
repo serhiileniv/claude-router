@@ -642,7 +642,14 @@ async function handleStreaming(
 
   const encoder = new TextEncoder();
 
+  let cancelled = false;
   const readable = new ReadableStream({
+    // Client disconnect: stop the upstream call (it would keep running and
+    // billing) and let the pump's catch record the event.
+    cancel() {
+      cancelled = true;
+      stream.abort();
+    },
     async start(controller) {
       try {
         for (let r = first; !r.done; r = await iterator.next()) {
@@ -660,21 +667,22 @@ async function handleStreaming(
 
         recordEvent(buildRouteEvent({ tier, model, cost, classifyResult, context, dispatched: dispatchedIn(finalMessage.content) }), config);
 
-        controller.close();
+        if (!cancelled) controller.close();
       } catch (err) {
         // Headers are long gone — an SSE error frame is the only signal the
         // client can still receive. But the failure must not vanish from the
         // proxy's own books: record it so history/stats count it as an error
         // rather than showing nothing (or a $0.00 "success").
         const errorData = `event: error\ndata: ${JSON.stringify({ error: { message: String(err) } })}\n\n`;
-        controller.enqueue(encoder.encode(errorData));
+        // After a cancel the controller is closed; enqueue/close would throw.
+        if (!cancelled) controller.enqueue(encoder.encode(errorData));
         if (config.verbose) {
           console.error(
             `${term.dim('[claude-router]')} ${term.red('stream error')} → ${tier} (${model}): ${String(err)}`,
           );
         }
         recordEvent(errorRouteEvent({ tier, model, classifyResult, context, error: err }), config);
-        controller.close();
+        if (!cancelled) controller.close();
       }
     },
   });
