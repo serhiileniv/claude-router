@@ -189,7 +189,7 @@ Streaming responses only set `x-router-tier/model/classifier/confidence/reason` 
 
 **Streaming error contract** (`handleStreaming`): the first stream event is awaited **before** the Response is committed, so pre-stream failures (401 auth, 400 validation, connection refused → 502) return their real HTTP status via the shared `apiErrorResponse` mapper — never a `200` carrying an SSE error frame. Once headers are out, a mid-stream failure emits the SSE `event: error` frame *and* records a `RouteEvent` with `error` set so it lands in `RouteTotals.errors` instead of vanishing. `apiErrorResponse` gates on a **numeric** `status` — `APIConnectionError` is APIError-shaped with `status: undefined`, and passing that to `c.json` silently produced a 200.
 
-**No CORS, on purpose** (`server.ts`): every legitimate consumer is same-origin (dashboard) or CORS-exempt (Node fetch). The old wildcard let any webpage in the operator's browser POST /v1/messages to localhost and read the response. A test pins the header's absence — do not add `cors()` back.
+**No CORS, on purpose** (`server.ts`): every legitimate consumer is same-origin (dashboard) or CORS-exempt (Node fetch). The old wildcard let any webpage in the operator's browser POST /v1/messages to localhost and read the response. A test pins the header's absence — do not add `cors()` back. Absent CORS only blocks the *read*, though; the actual boundary is `localGuard` (`src/proxy/local-guard.ts`: loopback `Host` allow-list, `Origin`/`Sec-Fetch-Site` refusal) plus `requireJson` on the POST routes, which stop a cross-site `text/plain` POST and DNS rebinding.
 
 ### CLI (`src/proxy/cli.ts`)
 
