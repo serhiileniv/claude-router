@@ -1,6 +1,6 @@
 {
   "name": "claude-router",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Orchestration mode for Claude Code: role agents for reconnaissance, implementation and fresh-context review, with the claude-router proxy pinning each role's model and measuring what it saved.",
   "author": {
     "name": "Serhii Leniv"

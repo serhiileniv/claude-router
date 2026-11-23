@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-11-23
+
 Fixes ported from the [smoochy/Claude-router](https://github.com/smoochy/Claude-router) fork — thanks @smoochy.
 
 ### Security
