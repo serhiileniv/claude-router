@@ -54,8 +54,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@hono/node-server": "^2.0.1",
-    "hono": "^4.12.16"
+    "@hono/node-server": "^2.1.11",
+    "hono": "^4.13.21"
   },
   "optionalDependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.29.0",

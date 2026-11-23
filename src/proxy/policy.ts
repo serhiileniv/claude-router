@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,15 +27,51 @@ export interface ExecResult {
 /** Runs `claude <args>`; injectable so the install flow is testable without the CLI. */
 export type Exec = (args: string[]) => ExecResult;
 
-export function defaultExec(args: string[]): ExecResult {
-  const win = process.platform === 'win32';
+/**
+ * One cmd.exe command line for a `.cmd` shim. Node refuses to spawn `.cmd`
+ * without a shell, but `shell: true` plus an args array concatenates the args
+ * unescaped (DEP0190). So the shell gets a single string whose words are
+ * double-quoted here. Rejected: `"%^&|<>!` and line breaks (`!` expands inside
+ * quotes under delayed expansion). Backslashes before the closing quote are
+ * doubled so the target's argv parser does not read `\"` as a literal quote.
+ * Keep in sync with the copy in plugin/hooks/sessionstart.js.
+ */
+export function winCmdLine(bin: string, args: string[]): string {
+  const q = (a: string) => {
+    if (/["%^&|<>!\r\n]/.test(a)) throw new Error(`unsafe argument for cmd.exe: ${a}`);
+    return /^[\w./:@=+-]+$/.test(a) ? a : `"${a.replace(/\\+$/, (m) => m + m)}"`;
+  };
+  return [bin, ...args].map(q).join(' ');
+}
+
+type ExecOpts = { encoding: 'utf8'; stdio: ['ignore', 'pipe', 'pipe']; timeout: number };
+interface WinRunners {
+  file: (bin: string, args: string[], opts: ExecOpts) => string;
+  shell: (cmd: string, opts: ExecOpts) => string;
+}
+
+/**
+ * Windows: a native install ships only `claude.exe` (no shell needed), an npm install only the `claude.cmd` shim
+ * (cmd.exe). Try the exe first and fall back to the shim only when the exe is not on PATH (ENOENT).
+ */
+export function runClaudeWin(
+  args: string[],
+  opts: Partial<ExecOpts> = {},
+  run: WinRunners = { file: (b, a, o) => execFileSync(b, a, o), shell: (c, o) => execSync(c, o) },
+): string {
+  const o = { encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'], timeout: 60_000, ...opts };
   try {
-    const output = execFileSync(win ? 'claude.cmd' : 'claude', args, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 60_000,
-      shell: win,
-    });
+    return run.file('claude.exe', args, o);
+  } catch (err) {
+    if ((err as { code?: string }).code !== 'ENOENT') throw err;
+    return run.shell(winCmdLine('claude.cmd', args), o);
+  }
+}
+
+export function defaultExec(args: string[]): ExecResult {
+  try {
+    const opts = { encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'], timeout: 60_000 };
+    const output = process.platform === 'win32' ? runClaudeWin(args, opts) : execFileSync('claude', args, opts);
     return { ok: true, output: output.trim() };
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };

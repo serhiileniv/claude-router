@@ -6,7 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { proxyPort, readStdinJson, request } = require('./common.js');
+const { findProxyPort, readStdinJson, request } = require('./common.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -17,14 +17,30 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * unreferenced: the hook must not wait on the daemon's lifetime, only poll
  * for its health. CLAUDE_ROUTER_BIN overrides the binary (tests, odd PATHs);
  * CLAUDE_ROUTER_NO_AUTOSTART=1 disables this entirely.
+ *
+ * Not detached on Windows: a detached cmd.exe has no console, so the node it
+ * launches allocates a visible one (a "node.exe" window). Attached, both share
+ * the hidden console windowsHide creates; `start -d` detaches the daemon itself.
  */
+// Copy of winCmdLine in src/proxy/policy.ts (the plugin ships standalone); keep in sync.
+function winCmdLine(bin, args) {
+  const q = (a) => {
+    if (/["%^&|<>!\r\n]/.test(a)) throw new Error(`unsafe argument for cmd.exe: ${a}`);
+    return /^[\w./:@=+-]+$/.test(a) ? a : `"${a.replace(/\\+$/, (m) => m + m)}"`;
+  };
+  return [bin, ...args].map(q).join(' ');
+}
+
 async function ensureProxy(port) {
   let health = await request(port, 'GET', '/health');
   if (health || process.env.CLAUDE_ROUTER_NO_AUTOSTART) return { health, started: false };
   try {
     const win = process.platform === 'win32';
     const bin = process.env.CLAUDE_ROUTER_BIN || (win ? 'claude-router.cmd' : 'claude-router');
-    const child = spawn(bin, ['start', '-d'], { detached: true, stdio: 'ignore', shell: win, windowsHide: true });
+    // Windows: one command string, not shell:true + args array (DEP0190); bin is quoted (may hold spaces).
+    const child = win
+      ? spawn(winCmdLine(bin, ['start', '-d']), { stdio: 'ignore', shell: true, windowsHide: true })
+      : spawn(bin, ['start', '-d'], { detached: true, stdio: 'ignore', windowsHide: true });
     child.on('error', () => {});
     child.unref();
   } catch {
@@ -40,7 +56,7 @@ async function ensureProxy(port) {
 async function main() {
   await readStdinJson(); // consumed, not needed — keeps the pipe drained
   const policy = fs.readFileSync(path.join(__dirname, '..', 'policy', 'policy.md'), 'utf8');
-  const port = proxyPort();
+  const port = await findProxyPort();
   const { health, started } = await ensureProxy(port);
 
   let status;

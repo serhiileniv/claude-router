@@ -117,6 +117,18 @@ describe('history', () => {
     assert.equal(stats.requests, 1);
     assert.equal(stats.errors, 0);
   });
+
+  it('reads a large ledger in bounded chunks, not one whole-file buffer', (t) => {
+    const file = tempFile();
+    const line = JSON.stringify(makeEvent({ retryReason: 'x'.repeat(4000) })) + '\n';
+    const count = Math.ceil((9 * 1024 * 1024) / line.length); // > 2 chunks of 4 MiB
+    fs.writeFileSync(file, line.repeat(count));
+    const reads = t.mock.method(fs, 'readSync');
+    const stats = readLifetimeStats(file);
+    assert.equal(stats.requests, count);
+    assert.ok(reads.mock.callCount() > 1);
+    for (const call of reads.mock.calls) assert.ok(((call.arguments as unknown[])[3] as number) <= 4 * 1024 * 1024);
+  });
 });
 
 describe('file modes', () => {

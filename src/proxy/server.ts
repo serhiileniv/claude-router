@@ -3,22 +3,28 @@ import Anthropic from '@anthropic-ai/sdk';
 import { handleMessages, handlePassthrough, registerAgent, routeHistory, routeCounters, type HandlerConfig } from './handler.js';
 import { getVersion } from './cli-config.js';
 import { renderDashboard } from './dashboard.js';
-import { readLifetimeStats } from './history.js';
+import { readLifetimeStatsAsync } from './history.js';
 import { buildHealth, formatStatusLine } from './health.js';
+import { localGuard, requireJson } from './local-guard.js';
 
 export function createProxyApp(
   config: HandlerConfig,
   providerClient: Anthropic | null = null,
+  opts: { allowAnyHost?: boolean } = {},
 ): Hono {
   const app = new Hono();
   const health = { ...config, version: getVersion() };
+  app.use('*', localGuard(opts));
+  app.use('/v1/messages', requireJson);
+  app.use('/api/agents', requireJson);
 
-  // Deliberately NO CORS middleware. Every legitimate consumer is same-origin
-  // (the dashboard) or CORS-exempt (Node fetch from the CLI/statusline). A
-  // wildcard here let any webpage in the operator's browser POST /v1/messages
-  // to localhost and read the response — with bedrock/vertex that spends the
-  // operator's cloud credentials with no authentication. Browsers blocking
-  // cross-origin reads IS the security boundary; do not add cors() back.
+  // Deliberately NO CORS middleware, and not CORS alone either: a wildcard let
+  // any webpage in the operator's browser POST /v1/messages to localhost and
+  // read the response, and with bedrock/vertex that spends the operator's cloud
+  // credentials with no authentication. Absent CORS only blocks the *read*; the
+  // request is still sent, and DNS rebinding makes the read same-origin. The
+  // boundary is `localGuard` (Host allow-list, Origin and Sec-Fetch-Site) plus
+  // `requireJson` on the POST routes; do not add cors() back.
 
   app.get('/health', (c) => c.json(buildHealth(health, routeHistory, routeCounters.recorded)));
 
@@ -50,8 +56,9 @@ export function createProxyApp(
     return c.body(null, 204);
   });
 
-  app.get('/dashboard', (c) => {
-    const lifetime = config.historyFile ? readLifetimeStats(config.historyFile) : undefined;
+  app.get('/dashboard', async (c) => {
+    // Async + chunked: the first read folds the whole ledger and must not block /v1/messages.
+    const lifetime = config.historyFile ? await readLifetimeStatsAsync(config.historyFile) : undefined;
     return c.html(renderDashboard(routeHistory, lifetime));
   });
 

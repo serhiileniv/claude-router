@@ -185,6 +185,16 @@ describe('restartArgs', () => {
     assert.deepEqual(restartArgs([], ['--force-route', '--port', '4500']), ['--force-route', '--port', '4500']);
   });
 
+  it('drops inherited flags that config.json no longer holds', () => {
+    const prev = ['--port', '4500', '--force-route', '--session-model', 'opus'];
+    assert.deepEqual(restartArgs([], prev, { port: 4500, forceRoute: true }), ['--port', '4500', '--force-route']);
+  });
+
+  it('treats an empty-string config value as not set', () => {
+    const prev = ['--port', '4000', '--session-model', 'opus'];
+    assert.deepEqual(restartArgs([], prev, { port: 4000, sessionModel: '' } as never), ['--port', '4000']);
+  });
+
   it('prefers the args just given', () => {
     assert.deepEqual(restartArgs(['--verbose'], ['--force-route']), ['--verbose']);
   });

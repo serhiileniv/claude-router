@@ -3,15 +3,53 @@
 // run under whatever `node` Claude Code finds, on every OS the proxy supports.
 const http = require('node:http');
 
-/** The proxy port: CLAUDE_ROUTER_PORT, else the port in ANTHROPIC_BASE_URL, else 4000. */
+const isLoopback = (u) => (u.hostname === '127.0.0.1' || u.hostname === 'localhost') && u.port;
+
+/**
+ * Loopback ports named by ANTHROPIC_BASE_URL, most likely router first. A front
+ * proxy that takes the upstream as a path suffix (billion-context:
+ * `http://127.0.0.1:48787/bili/http://127.0.0.1:4000`) embeds the next hop in the
+ * path, so the embedded URLs come last-hop first and the URL's own host, which is
+ * only the outermost relay, comes last.
+ */
+function candidatePorts(env = process.env) {
+  const ports = [];
+  try {
+    const u = new URL(env.ANTHROPIC_BASE_URL || '');
+    for (const part of u.pathname.split(/\/(?=https?:\/\/)/).slice(1).reverse()) {
+      try {
+        const inner = new URL(part);
+        if (isLoopback(inner)) ports.push(Number(inner.port));
+      } catch { /* not a URL */ }
+    }
+    if (isLoopback(u)) ports.push(Number(u.port));
+  } catch { /* not a URL */ }
+  return [...new Set(ports)];
+}
+
+/** Static guess: CLAUDE_ROUTER_PORT, else the most likely candidate from ANTHROPIC_BASE_URL, else 4000. */
 function proxyPort(env = process.env) {
   const explicit = Number(env.CLAUDE_ROUTER_PORT);
   if (Number.isInteger(explicit) && explicit > 0) return explicit;
-  try {
-    const u = new URL(env.ANTHROPIC_BASE_URL || '');
-    if ((u.hostname === '127.0.0.1' || u.hostname === 'localhost') && u.port) return Number(u.port);
-  } catch { /* not a URL */ }
-  return 4000;
+  return candidatePorts(env)[0] ?? 4000;
+}
+
+/**
+ * The port the router really listens on. CLAUDE_ROUTER_PORT is authoritative;
+ * otherwise every candidate from ANTHROPIC_BASE_URL is asked for /health and the
+ * first one answering as `claude-router-proxy` wins, so the router can sit anywhere
+ * in a chain of local relays. With no answer, falls back to the static guess.
+ */
+async function findProxyPort(env = process.env) {
+  const explicit = Number(env.CLAUDE_ROUTER_PORT);
+  if (Number.isInteger(explicit) && explicit > 0) return explicit;
+  for (const port of candidatePorts(env)) {
+    const res = await request(port, 'GET', '/health');
+    try {
+      if (res && res.status === 200 && JSON.parse(res.body).service === 'claude-router-proxy') return port;
+    } catch { /* not the router */ }
+  }
+  return proxyPort(env);
 }
 
 /** Read all of stdin as JSON; `{}` on empty or malformed input (hooks must never fail on it). */
@@ -52,4 +90,4 @@ function request(port, method, path, body, timeoutMs = 300) {
   });
 }
 
-module.exports = { proxyPort, readStdinJson, request };
+module.exports = { proxyPort, findProxyPort, candidatePorts, readStdinJson, request };

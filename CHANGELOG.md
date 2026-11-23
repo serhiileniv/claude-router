@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [Unreleased]
 
+Fixes ported from the [smoochy/Claude-router](https://github.com/smoochy/Claude-router) fork — thanks @smoochy.
+
+### Security
+- **The proxy refuses browser-origin requests.** Having no CORS only stopped a web page from *reading* a response. A cross-site `text/plain` POST to `/v1/messages` was still sent, and with Bedrock or Vertex it spent the operator's cloud credentials. DNS rebinding also made `/dashboard`, `/health` and `/api/last-route` readable. The new `localGuard` middleware requires a loopback `Host` (skipped when you bind a network address on purpose). It refuses any `Origin` that differs from `Host`, including `null`, and refuses `Sec-Fetch-Site: cross-site`/`same-site`. `POST /v1/messages` and `POST /api/agents` now require `Content-Type: application/json` and return 415 otherwise.
+- `hono` ^4.13.21 and `@hono/node-server` ^2.1.11 pick up upstream security fixes. The lockfile also moves the transitive `fast-xml-parser` (Bedrock SDK) past GHSA-474x-hrwr-fgx4.
+
+### Fixed
+- **The daemon survives an unhandled upstream stream `error`.** `UND_ERR_SOCKET` and similar network codes are logged, and the proxy keeps serving. Any other uncaught exception still exits.
+- **Memory is bounded.** The request body has a size cap. The SSE usage parser keeps only the current partial line, not the whole stream. `/dashboard` folds `history.jsonl` asynchronously in chunks instead of blocking `/v1/messages`, and the lifetime ledger is read in bounded chunks.
+- **A cancelled streaming request aborts the upstream call** instead of running (and billing) to completion. The cancelled stream is recorded in history as an error.
+- **`restart` no longer brings back flags removed from `config.json`.** A stale `--session-model` held in `daemon.json` used to override the config file.
+- **The plugin hooks find the router anywhere in a chained `ANTHROPIC_BASE_URL`.** They probe each loopback hop's `/health`.
+- **Windows:** `.cmd` spawns no longer trigger DEP0190. `winCmdLine` handles trailing backslashes, refuses `!`, and quotes a bin path that contains spaces. `install` finds a native `claude.exe` and falls back to `claude.cmd`.
+
 ## [0.4.0] — 2026-09-04
 
 ### Changed

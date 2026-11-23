@@ -29,7 +29,7 @@ import {
   applyRegionEnv,
   configFromOptions,
   getVersion,
-  loadFileConfig,
+  loadFileConfig, OPTIONS,
   parseServeArgs,
   routerPaths,
   serveArgsFrom,
@@ -248,12 +248,13 @@ async function cmdStart(args: string[], paths: RouterPaths): Promise<CommandResu
     routing: options.routing,
     historyFile: paths.historyFile,
     upstream: options.upstream,
-  }, providerClient);
+  }, providerClient, { allowAnyHost: isNetworkExposed(options.host) });
 
   const { loaded } = loadFileConfig(paths.configFile);
 
   // Process-global handlers stay here rather than in `startServer`: they outlive
   // any one bind, and a test that imports `startServer` must not inherit them.
+  installUncaughtGuard();
   process.on('unhandledRejection', (e) => {
     term.errorLine(`Fatal error: ${String(e)}`);
     if (options.provider === 'vertex') {
@@ -279,6 +280,30 @@ async function cmdStart(args: string[], paths: RouterPaths): Promise<CommandResu
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   return ok([...warnings, ...startBanner(options, models, loaded, paths)]);
+}
+
+/** Transport-level failures of a pooled upstream connection (undici, node:http2, node:net). */
+const UPSTREAM_TRANSPORT_ERROR = /^(UND_ERR_|ERR_HTTP2_|ECONNRESET$|EPIPE$|ETIMEDOUT$|ECONNREFUSED$|ENOTFOUND$|EAI_AGAIN$)/;
+
+/**
+ * An `error` event nobody listens for is an uncaught exception, not a rejection,
+ * so `unhandledRejection` never sees it. undici emits one on a pooled
+ * ClientHttp2Stream when the upstream closes the socket (`UND_ERR_SOCKET`); that
+ * fails one request and must not take the daemon down. Anything else stays fatal.
+ */
+export function installUncaughtGuard(
+  proc: Pick<NodeJS.Process, 'on'> = process,
+  onFatal: (code: number) => void = (code) => process.exit(code),
+): void {
+  proc.on('uncaughtException', (e: unknown) => {
+    const code = (e as NodeJS.ErrnoException | undefined)?.code;
+    if (typeof code === 'string' && UPSTREAM_TRANSPORT_ERROR.test(code)) {
+      console.error(`[claude-router] upstream connection error (${code}), request failed, daemon keeps serving: ${String(e)}`);
+      return;
+    }
+    console.error(`[claude-router] uncaught exception: ${(e as Error | undefined)?.stack ?? String(e)}`);
+    onFatal(1);
+  });
 }
 
 /**
@@ -326,8 +351,22 @@ async function cmdStop(_args: string[], paths: RouterPaths): Promise<CommandResu
  * previous daemon recorded, else defaults. Pure, because "does a restart carry
  * `--force-route` over" is the whole point of the command.
  */
-export function restartArgs(args: string[], previous: string[] | undefined): string[] {
-  return args.length > 0 ? args : previous ?? [];
+export function restartArgs(args: string[], previous: string[] | undefined, config?: FileConfig): string[] {
+  if (args.length > 0) return args;
+  if (!previous) return [];
+  if (!config) return previous;
+  // config.json is the source of truth: an inherited flag whose key it no longer
+  // holds was removed on purpose, and CLI flags beat the file, so keeping it
+  // would resurrect it.
+  const kept: string[] = [];
+  for (let i = 0; i < previous.length; i++) {
+    const spec = OPTIONS.find((o) => o.flags.includes(previous[i]));
+    const width = spec && spec.kind.type !== 'boolean' ? 2 : 1;
+    const held = spec && (config as Record<string, unknown>)[spec.key];
+    if (!spec || (held !== undefined && held !== null && held !== '')) kept.push(...previous.slice(i, i + width));
+    i += width - 1;
+  }
+  return kept;
 }
 
 async function cmdRestart(args: string[], paths: RouterPaths): Promise<CommandResult> {
@@ -344,7 +383,7 @@ async function cmdRestart(args: string[], paths: RouterPaths): Promise<CommandRe
     );
   }
 
-  const { options, warnings } = resolveOptions(restartArgs(args, state?.args), paths);
+  const { options, warnings } = resolveOptions(restartArgs(args, state?.args, (() => { const l = loadFileConfig(paths.configFile); return l.loaded ? l.config : undefined; })()), paths);
   lines.push(...warnings);
 
   const result = await startDaemon(serveArgsFrom(options), options.port, paths);
